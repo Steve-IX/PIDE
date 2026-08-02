@@ -1,0 +1,210 @@
+@import "tailwindcss";
+
+@theme {
+  --color-pide-fg: var(--pide-foreground);
+  --color-pide-muted: var(--pide-descriptionForeground);
+  --color-pide-error: var(--pide-errorForeground);
+  --color-pide-focus: var(--pide-focusBorder);
+  --color-pide-activity: var(--pide-activityBar-background);
+  --color-pide-activity-fg: var(--pide-activityBar-foreground);
+  --color-pide-sidebar: var(--pide-sideBar-background);
+  --color-pide-sidebar-fg: var(--pide-sideBar-foreground);
+  --color-pide-sidebar-border: var(--pide-sideBar-border);
+  --color-pide-editor: var(--pide-editor-background);
+  --color-pide-editor-fg: var(--pide-editor-foreground);
+  --color-pide-panel: var(--pide-panel-background);
+  --color-pide-panel-border: var(--pide-panel-border);
+  --color-pide-status: var(--pide-statusBar-background);
+  --color-pide-status-fg: var(--pide-statusBar-foreground);
+  --color-pide-tab: var(--pide-tab-inactiveBackground);
+  --color-pide-tab-active: var(--pide-tab-activeBackground);
+  --color-pide-button: var(--pide-button-background);
+  --color-pide-button-fg: var(--pide-button-foreground);
+  --color-pide-button-hover: var(--pide-button-hoverBackground);
+  --color-pide-input: var(--pide-input-background);
+  --color-pide-input-fg: var(--pide-input-foreground);
+  --color-pide-input-border: var(--pide-input-border);
+  --color-pide-list-hover: var(--pide-list-hoverBackground);
+  --color-pide-list-active: var(--pide-list-activeSelectionBackground);
+  --color-pide-widget: var(--pide-editorWidget-background);
+  --color-pide-widget-border: var(--pide-editorWidget-border);
+  --color-pide-quick: var(--pide-quickInput-background);
+  --color-pide-link: var(--pide-textLink-foreground);
+  --color-pide-badge: var(--pide-badge-background);
+  --color-pide-git-mod: var(--pide-gitDecoration-modifiedResourceForeground);
+  --color-pide-git-add: var(--pide-gitDecoration-untrackedResourceForeground);
+  --color-pide-git-del: var(--pide-gitDecoration-deletedResourceForeground);
+}
+
+:root {
+  --pide-foreground: #d7dde8;
+  --pide-descriptionForeground: #8b95a8;
+  --pide-errorForeground: #f87171;
+  --pide-focusBorder: #3d7eff;
+  --pide-activityBar-background: #0b0e14;
+  --pide-activityBar-foreground: #e8edf5;
+  --pide-activityBar-inactiveForeground: #6b7588;
+  --pide-activityBar-border: #1a2030;
+  --pide-activityBar-activeBorder: #3d7eff;
+  --pide-sideBar-background: #11151e;
+  --pide-sideBar-foreground: #c5ccd8;
+  --pide-sideBar-border: #1a2030;
+  --pide-sideBarTitle-foreground: #8b95a8;
+  --pide-list-hoverBackground: #1a2233;
+  --pide-list-activeSelectionBackground: #243047;
+  --pide-editor-background: #0d1118;
+  --pide-editor-foreground: #d7dde8;
+  --pide-editorGroupHeader-tabsBackground: #0f131b;
+  --pide-tab-activeBackground: #0d1118;
+  --pide-tab-activeForeground: #e8edf5;
+  --pide-tab-inactiveBackground: #0f131b;
+  --pide-tab-inactiveForeground: #6b7588;
+  --pide-tab-border: #1a2030;
+  --pide-tab-activeBorderTop: #3d7eff;
+  --pide-panel-background: #0f131b;
+  --pide-panel-border: #1a2030;
+  --pide-panelTitle-activeForeground: #e8edf5;
+  --pide-panelTitle-inactiveForeground: #6b7588;
+  --pide-statusBar-background: #1a4a9e;
+  --pide-statusBar-foreground: #e8edf5;
+  --pide-statusBarItem-hoverBackground: #ffffff22;
+  --pide-button-background: #3d7eff;
+  --pide-button-foreground: #ffffff;
+  --pide-button-hoverBackground: #5b91ff;
+  --pide-button-secondaryBackground: #243047;
+  --pide-button-secondaryForeground: #d7dde8;
+  --pide-input-background: #0b0e14;
+  --pide-input-foreground: #d7dde8;
+  --pide-input-border: #2a3344;
+  --pide-input-placeholderForeground: #6b7588;
+  --pide-editorWidget-background: #151b27;
+  --pide-editorWidget-border: #2a3344;
+  --pide-quickInput-background: #151b27;
+  --pide-quickInput-foreground: #d7dde8;
+  --pide-quickInputList-focusBackground: #243047;
+  --pide-notifications-background: #151b27;
+  --pide-notifications-foreground: #d7dde8;
+  --pide-notifications-border: #2a3344;
+  --pide-textLink-foreground: #6ba3ff;
+  --pide-badge-background: #3d7eff;
+  --pide-badge-foreground: #ffffff;
+  --pide-scrollbarSlider-background: #3a455866;
+  --pide-scrollbarSlider-hoverBackground: #4a556888;
+  --pide-gitDecoration-modifiedResourceForeground: #fbbf24;
+  --pide-gitDecoration-untrackedResourceForeground: #4ade80;
+  --pide-gitDecoration-deletedResourceForeground: #f87171;
+  --bg-app: var(--pide-editor-background);
+  --bg-panel: var(--pide-sideBar-background);
+  --bg-elevated: var(--pide-editorWidget-background);
+  --border: var(--pide-sideBar-border);
+  --accent: var(--pide-button-background);
+  --accent-hover: var(--pide-button-hoverBackground);
+  --text: var(--pide-foreground);
+  --text-muted: var(--pide-descriptionForeground);
+  --pide-ui-font-size: 13px;
+}
+
+html[data-density="compact"] {
+  --pide-ui-font-size: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--pide-editor-background);
+  color: var(--pide-foreground);
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  font-size: var(--pide-ui-font-size);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--pide-scrollbarSlider-background);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--pide-scrollbarSlider-hoverBackground);
+}
+
+.chat-markdown pre {
+  overflow-x: auto;
+  border-radius: 0.375rem;
+  background: var(--pide-editor-background);
+  border: 1px solid var(--pide-sideBar-border);
+  padding: 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.chat-markdown code {
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.85em;
+}
+
+.chat-markdown :not(pre) > code {
+  background: var(--pide-button-secondaryBackground);
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+}
+
+.chat-markdown p {
+  margin: 0.4rem 0;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.4rem 0;
+  padding-left: 1.25rem;
+}
+
+.chat-markdown a {
+  color: var(--pide-textLink-foreground);
+}
+
+/* Motion */
+.pide-fade-in {
+  animation: pide-fade-in 200ms ease-out;
+}
+
+@keyframes pide-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
