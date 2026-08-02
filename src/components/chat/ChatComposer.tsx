@@ -54,7 +54,7 @@ export default function ChatComposer({
 
       <div
         className="rounded-2xl border border-pide-input-border bg-pide-input shadow-lg
-          focus-within:border-pide-focus transition-colors duration-150 overflow-hidden"
+          focus-within:border-pide-focus transition-colors duration-150"
       >
         <textarea
           value={value}
