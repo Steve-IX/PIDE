@@ -84,11 +84,15 @@ export async function resolveChatModel(args: {
   agentModels: AgentModelRoles;
   keepAlive: string;
   signal?: AbortSignal;
+  /** Prefer 1.5B explore/router for Ask and short Agent code when Hyper-Speed is on. */
+  hyperSpeed?: boolean;
 }): Promise<{ model: string; intent: RouteIntent; label: string }> {
   const enabled = enabledModelList(args.installed, args.enabledModels);
   const worker = resolveRoleModel("worker", args.agentModels, enabled);
   const planner = resolveRoleModel("planner", args.agentModels, enabled);
   const router = resolveRoleModel("router", args.agentModels, enabled);
+  const explore = resolveRoleModel("explore", args.agentModels, enabled);
+  const fastCoder = args.hyperSpeed ? explore || router : worker;
 
   if (!args.autoModel) {
     const manual =
@@ -96,7 +100,6 @@ export async function resolveChatModel(args: {
     return { model: manual, intent: "code", label: manual };
   }
 
-  // Explicit modes skip router when clear
   if (args.chatMode === "plan") {
     return { model: planner, intent: "plan", label: `Auto → ${planner} (plan)` };
   }
@@ -104,13 +107,16 @@ export async function resolveChatModel(args: {
     return { model: planner, intent: "debug", label: `Auto → ${planner} (debug)` };
   }
   if (args.chatMode === "ask") {
-    return { model: worker, intent: "ask", label: `Auto → ${worker} (ask)` };
+    return {
+      model: fastCoder,
+      intent: "ask",
+      label: `Auto → ${fastCoder} (ask)`,
+    };
   }
   if (args.chatMode === "multitask") {
     return { model: planner, intent: "plan", label: `Auto → ${planner} (multitask)` };
   }
 
-  // Agent mode: classify with tiny router
   const intent = await classifyIntent({
     baseUrl: args.baseUrl,
     router,
@@ -124,6 +130,15 @@ export async function resolveChatModel(args: {
       model: planner,
       intent,
       label: `Auto → ${planner} (${intent})`,
+    };
+  }
+  if (intent === "ask" || args.hyperSpeed) {
+    // Hyper-Speed: short Agent / ask → 1.5B; long codegen still uses worker when not hyper
+    const model = args.hyperSpeed || intent === "ask" ? fastCoder : worker;
+    return {
+      model,
+      intent,
+      label: `Auto → ${model} (${intent}${args.hyperSpeed ? ", hyper" : ""})`,
     };
   }
   return {
@@ -143,7 +158,7 @@ export async function classifyIntent(args: {
   await warmModel(args.baseUrl, args.router, args.keepAlive);
   let raw = "";
   try {
-    raw = await chatStream({
+    const result = await chatStream({
       baseUrl: args.baseUrl,
       model: args.router,
       keepAlive: args.keepAlive,
@@ -160,6 +175,7 @@ export async function classifyIntent(args: {
       ],
       onToken: () => {},
     });
+    raw = result.text;
   } catch {
     return "code";
   }
@@ -192,7 +208,7 @@ export async function planMultitask(args: {
   const userContent = args.contextPrefix
     ? `${args.contextPrefix}\n\nUser request:\n${args.userText}`
     : args.userText;
-  const raw = await chatStream({
+  const result = await chatStream({
     baseUrl: args.baseUrl,
     model: args.planner,
     keepAlive: args.keepAlive,
@@ -210,7 +226,7 @@ export async function planMultitask(args: {
     onToken: () => {},
   });
 
-  return parseMultitaskJson(raw);
+  return parseMultitaskJson(result.text);
 }
 
 export function parseMultitaskJson(raw: string): MultitaskItem[] {

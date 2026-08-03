@@ -19,7 +19,15 @@ export interface ChatMessage {
   id: string;
   role: Exclude<ChatRole, "system">;
   content: string;
+  metrics?: {
+    evalCount: number;
+    evalDurationNs: number;
+    tokensPerSec: number;
+    ttftMs?: number;
+  };
 }
+
+export type InferenceBackend = "ollama" | "llamaCpp";
 
 export type SidebarView =
   | "explorer"
@@ -34,6 +42,25 @@ export interface Toast {
   id: string;
   kind: ToastKind;
   message: string;
+}
+
+export interface ConfirmDialogState {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+  resolve: (ok: boolean) => void;
+}
+
+export interface PromptDialogState {
+  title: string;
+  message?: string;
+  defaultValue?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  resolve: (value: string | null) => void;
 }
 
 export type UiDensity = "default" | "compact";
@@ -94,6 +121,43 @@ export interface AppSettings {
   enabledModels: string[];
   /** Role → preferred Ollama model name. */
   agentModels: AgentModelRoles;
+  /**
+   * Hyper-Speed: tighter context, higher batch, prefer 1.5B for Ask/short Agent,
+   * and force Fast-like runtime knobs for Iris Xe throughput.
+   */
+  hyperSpeed: boolean;
+  /** ollama = default; llamaCpp = optional llama-server (ngram speculation). */
+  inferenceBackend: InferenceBackend;
+  /** llama-server base URL when inferenceBackend is llamaCpp. */
+  llamaCppBaseUrl: string;
+  /** Path to llama-server executable (managed mode). */
+  llamaCppBinaryPath: string;
+  /** Path to GGUF model file. */
+  llamaCppGgufPath: string;
+  /** When true, PIDE owns start/stop/minimize lifecycle. */
+  llamaCppManaged: boolean;
+  /** -ngl layers for sidecar. */
+  llamaCppNumGpu: number;
+  /** Context size (-c) for sidecar. */
+  llamaCppCtx: number;
+  /** KV cache quantization. */
+  llamaCppKvCache: "f16" | "q8_0";
+  /** Enable ngram-mod speculative decoding on sidecar. */
+  llamaCppNgram: boolean;
+  /** Stop sidecar when IDE minimized (frees RAM). */
+  llamaCppSuspendOnMinimize: boolean;
+  /** Monaco inline FIM ghost text (llama.cpp /completion only). */
+  ghostTextEnabled: boolean;
+  /** Debounce before FIM fetch (ms). */
+  ghostTextDebounceMs: number;
+  /** Max tokens to predict for ghost text. */
+  ghostTextMaxPredict: number;
+  /** Sandbox wall-clock limit (seconds). */
+  sandboxWallSeconds: number;
+  /** Wasmtime guest memory limit (MiB). */
+  sandboxWasmMemoryMib: number;
+  /** Host Job Object / limited-run memory (MiB). */
+  sandboxHostMemoryMib: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -119,6 +183,23 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoModel: true,
   enabledModels: [],
   agentModels: { ...DEFAULT_AGENT_MODELS },
+  hyperSpeed: false,
+  inferenceBackend: "ollama",
+  llamaCppBaseUrl: "http://127.0.0.1:8080",
+  llamaCppBinaryPath: "C:\\tools\\llama.cpp\\llama-server.exe",
+  llamaCppGgufPath: "C:\\models\\qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+  llamaCppManaged: false,
+  llamaCppNumGpu: 99,
+  llamaCppCtx: 2048,
+  llamaCppKvCache: "q8_0",
+  llamaCppNgram: true,
+  llamaCppSuspendOnMinimize: true,
+  ghostTextEnabled: true,
+  ghostTextDebounceMs: 150,
+  ghostTextMaxPredict: 64,
+  sandboxWallSeconds: 5,
+  sandboxWasmMemoryMib: 64,
+  sandboxHostMemoryMib: 256,
 };
 
 export type PaletteMode = "command" | "quickOpen" | "colorTheme" | null;
@@ -138,6 +219,7 @@ export interface ProblemItem {
   message: string;
   path?: string;
   line?: number;
+  column?: number;
 }
 
 export interface RevealRequest {

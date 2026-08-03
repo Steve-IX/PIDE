@@ -1,10 +1,14 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import Editor, { loader } from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
 import { useIdeStore } from "../stores/ideStore";
 import TabBar from "./TabBar";
 import Breadcrumbs from "./Breadcrumbs";
+import DebugToolbar from "./DebugToolbar";
 import { MONACO_THEME_ID, getLastAppliedTheme, subscribeTheme } from "../theme";
 import type { AppliedTheme } from "../theme/applyTheme";
+import { registerGhostTextProvider } from "../services/ghostTextProvider";
+import { bindMonacoClipboard } from "../services/clipboard";
 
 let monacoThemeReady = false;
 
@@ -34,6 +38,14 @@ export default function EditorPane() {
   const revealRequest = useIdeStore((s) => s.revealRequest);
   const clearReveal = useIdeStore((s) => s.clearReveal);
   const monacoEditor = useIdeStore((s) => s.monacoEditor);
+  const breakpoints = useIdeStore((s) => s.breakpoints);
+  const toggleBreakpoint = useIdeStore((s) => s.toggleBreakpoint);
+  const debugStoppedPath = useIdeStore((s) => s.debugStoppedPath);
+  const debugStoppedLine = useIdeStore((s) => s.debugStoppedLine);
+  const ghostDisposableRef = useRef<{ dispose: () => void } | null>(null);
+  const bpClickDisposableRef = useRef<{ dispose: () => void } | null>(null);
+  const decorationIdsRef = useRef<string[]>([]);
+  const monacoApiRef = useRef<typeof import("monaco-editor") | null>(null);
 
   const active = tabs.find((t) => t.path === activePath);
 
@@ -42,6 +54,58 @@ export default function EditorPane() {
       applyMonacoFromTheme(applied);
     });
   }, []);
+
+  useEffect(() => {
+    return () => {
+      ghostDisposableRef.current?.dispose();
+      ghostDisposableRef.current = null;
+      bpClickDisposableRef.current?.dispose();
+      bpClickDisposableRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const ed = monacoEditor as MonacoEditor.IStandaloneCodeEditor | null;
+    const monaco = monacoApiRef.current;
+    if (!ed || !monaco || !activePath) {
+      if (ed) {
+        decorationIdsRef.current = ed.deltaDecorations(decorationIdsRef.current, []);
+      }
+      return;
+    }
+    const lines = breakpoints[activePath] ?? [];
+    const decs: MonacoEditor.IModelDeltaDecoration[] = lines.map((line) => ({
+      range: new monaco.Range(line, 1, line, 1),
+      options: {
+        isWholeLine: false,
+        glyphMarginClassName: "pide-bp-glyph",
+        glyphMarginHoverMessage: { value: "Breakpoint" },
+      },
+    }));
+    const stoppedMatch =
+      debugStoppedPath &&
+      debugStoppedLine &&
+      (debugStoppedPath === activePath ||
+        debugStoppedPath.replace(/\\/g, "/").endsWith(activePath.replace(/\\/g, "/")) ||
+        activePath.replace(/\\/g, "/").endsWith(debugStoppedPath.replace(/\\/g, "/")));
+    if (stoppedMatch && debugStoppedLine) {
+      decs.push({
+        range: new monaco.Range(debugStoppedLine, 1, debugStoppedLine, 1),
+        options: {
+          isWholeLine: true,
+          className: "pide-debug-line",
+          glyphMarginClassName: "pide-debug-glyph",
+        },
+      });
+    }
+    decorationIdsRef.current = ed.deltaDecorations(decorationIdsRef.current, decs);
+  }, [
+    monacoEditor,
+    activePath,
+    breakpoints,
+    debugStoppedPath,
+    debugStoppedLine,
+  ]);
 
   useEffect(() => {
     if (!revealRequest || !monacoEditor || activePath !== revealRequest.path) return;
@@ -63,6 +127,7 @@ export default function EditorPane() {
     <div className="h-full flex flex-col min-w-0 bg-pide-editor text-pide-editor-fg">
       <TabBar />
       <Breadcrumbs />
+      {workspacePath ? <DebugToolbar /> : null}
       {!workspacePath ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-md px-6 pide-fade-in">
@@ -149,9 +214,11 @@ export default function EditorPane() {
               onChange={(v) => updateActiveContent(v ?? "")}
               onMount={(editor, monaco) => {
                 setMonacoEditor(editor);
+                monacoApiRef.current = monaco;
                 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
                   void saveActiveFile();
                 });
+                bindMonacoClipboard(editor, monaco);
                 const last = getLastAppliedTheme();
                 if (last) {
                   monaco.editor.defineTheme(
@@ -161,6 +228,20 @@ export default function EditorPane() {
                   monaco.editor.setTheme(MONACO_THEME_ID);
                   monacoThemeReady = true;
                 }
+                ghostDisposableRef.current?.dispose();
+                ghostDisposableRef.current = registerGhostTextProvider(monaco, () => ({
+                  settings: useIdeStore.getState().settings,
+                  activePath: useIdeStore.getState().activePath,
+                }));
+                bpClickDisposableRef.current?.dispose();
+                bpClickDisposableRef.current = editor.onMouseDown((e) => {
+                  if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
+                    return;
+                  }
+                  const line = e.target.position?.lineNumber;
+                  const path = useIdeStore.getState().activePath;
+                  if (line && path) toggleBreakpoint(path, line);
+                });
               }}
               options={{
                 fontSize,
@@ -175,6 +256,9 @@ export default function EditorPane() {
                 cursorBlinking: "smooth",
                 find: { addExtraSpaceOnTop: false },
                 formatOnPaste: true,
+                inlineSuggest: { enabled: true },
+                glyphMargin: true,
+                lineNumbersMinChars: 3,
               }}
             />
           </div>

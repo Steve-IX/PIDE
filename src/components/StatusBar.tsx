@@ -5,10 +5,16 @@ export default function StatusBar() {
   const activePath = useIdeStore((s) => s.activePath);
   const ollamaOnline = useIdeStore((s) => s.ollamaOnline);
   const selectedModel = useIdeStore((s) => s.selectedModel);
+  const lastTokensPerSec = useIdeStore((s) => s.lastTokensPerSec);
   const statusError = useIdeStore((s) => s.statusError);
   const tabs = useIdeStore((s) => s.tabs);
   const toggleBottomPanel = useIdeStore((s) => s.toggleBottomPanel);
+  const runActiveFile = useIdeStore((s) => s.runActiveFile);
+  const startDebugging = useIdeStore((s) => s.startDebugging);
+  const setBottomPanelOpen = useIdeStore((s) => s.setBottomPanelOpen);
+  const setBottomPanelTab = useIdeStore((s) => s.setBottomPanelTab);
   const setPaletteMode = useIdeStore((s) => s.setPaletteMode);
+  const settings = useIdeStore((s) => s.settings);
 
   const active = tabs.find((t) => t.path === activePath);
   const fileLabel = activePath
@@ -24,6 +30,26 @@ export default function StatusBar() {
         title="Toggle Terminal (Ctrl+`)"
       >
         Terminal
+      </button>
+      <button
+        type="button"
+        className="hover:bg-[var(--pide-statusBarItem-hoverBackground)] px-1 rounded transition-colors duration-150"
+        onClick={() => void runActiveFile()}
+        title="Run Current File (Ctrl+F5)"
+      >
+        Run
+      </button>
+      <button
+        type="button"
+        className="hover:bg-[var(--pide-statusBarItem-hoverBackground)] px-1 rounded transition-colors duration-150"
+        onClick={() => {
+          setBottomPanelOpen(true);
+          setBottomPanelTab("debug");
+          void startDebugging();
+        }}
+        title="Start Debugging (F5)"
+      >
+        Debug
       </button>
       <span className="opacity-70">|</span>
       <span className="truncate" title={workspacePath || "No workspace"}>
@@ -41,6 +67,19 @@ export default function StatusBar() {
             {statusError}
           </span>
         )}
+        {lastTokensPerSec != null && lastTokensPerSec > 0 ? (
+          <span
+            className="opacity-90 tabular-nums"
+            title="Last generation tokens per second"
+          >
+            {lastTokensPerSec.toFixed(1)} tok/s
+          </span>
+        ) : null}
+        {settings.hyperSpeed ? (
+          <span className="opacity-80" title="Hyper-Speed on">
+            Hyper
+          </span>
+        ) : null}
         <button
           type="button"
           className="hover:bg-[var(--pide-statusBarItem-hoverBackground)] px-1 rounded transition-colors duration-150"
@@ -54,7 +93,7 @@ export default function StatusBar() {
               ollamaOnline ? "bg-pide-git-add" : "bg-pide-status-fg opacity-50"
             }`}
           />
-          {ollamaOnline ? selectedModel || "Ollama" : "Ollama offline"}
+          {ollamaOnline ? selectedModel || "LLM" : "LLM offline"}
         </span>
       </span>
     </footer>

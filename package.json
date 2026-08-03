@@ -9,11 +9,13 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "refresh:tree-sitter": "node scripts/refresh-tree-sitter-wasm.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-dialog": "^2.2.1",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
@@ -22,6 +24,7 @@
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "web-tree-sitter": "^0.26.11",
     "zustand": "^5.0.5"
   },
   "devDependencies": {
@@ -31,6 +34,7 @@
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.2",
     "tailwindcss": "^4.1.8",
+    "tree-sitter-wasms": "^0.1.13",
     "typescript": "~5.8.3",
     "vite": "^6.3.5"
   }

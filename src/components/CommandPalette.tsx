@@ -34,6 +34,7 @@ export default function CommandPalette() {
   const newChatSession = useIdeStore((s) => s.newChatSession);
   const setBottomPanelTab = useIdeStore((s) => s.setBottomPanelTab);
   const setBottomPanelOpen = useIdeStore((s) => s.setBottomPanelOpen);
+  const workspaceTasks = useIdeStore((s) => s.workspaceTasks);
   const settings = useIdeStore((s) => s.settings);
   const updateSettings = useIdeStore((s) => s.updateSettings);
 
@@ -93,6 +94,44 @@ export default function CommandPalette() {
         hint: "Ctrl+`",
         run: toggleBottomPanel,
       },
+      {
+        id: "run-file",
+        label: "Run: Run Current File",
+        hint: "Ctrl+F5",
+        run: () => void useIdeStore.getState().runActiveFile(),
+      },
+      {
+        id: "debug-start",
+        label: "Debug: Start",
+        hint: "F5",
+        run: () => void useIdeStore.getState().startDebugging(),
+      },
+      {
+        id: "debug-stop",
+        label: "Debug: Stop",
+        run: () => void useIdeStore.getState().stopDebugging(),
+      },
+      {
+        id: "sandbox-run-wasm",
+        label: "Sandbox: Run Current Wasm",
+        run: () => void useIdeStore.getState().runActiveFileInSandbox(),
+      },
+      {
+        id: "sandbox-cancel",
+        label: "Sandbox: Cancel",
+        run: () => void useIdeStore.getState().cancelSandbox(),
+      },
+      {
+        id: "run-build",
+        label: "Tasks: Run Build Task",
+        hint: "Ctrl+Shift+B",
+        run: () => void useIdeStore.getState().runDefaultBuildTask(),
+      },
+      ...workspaceTasks.map((t) => ({
+        id: `task-${t.label}`,
+        label: `Tasks: Run Task — ${t.label}`,
+        run: () => void useIdeStore.getState().runTask(t.label),
+      })),
       {
         id: "search-files",
         label: "Search: Find in Files",
@@ -178,6 +217,7 @@ export default function CommandPalette() {
       toggleSidebar,
       updateSettings,
       workspacePath,
+      workspaceTasks,
     ],
   );
 

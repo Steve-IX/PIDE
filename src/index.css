@@ -208,3 +208,249 @@ select {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* DAP breakpoint + current line decorations (Monaco glyph margin) */
+.pide-bp-glyph {
+  background: #e5484d;
+  border-radius: 50%;
+  width: 10px !important;
+  height: 10px !important;
+  margin-left: 4px;
+  margin-top: 4px;
+}
+.pide-debug-glyph {
+  background: #f5a524;
+  width: 0 !important;
+  height: 0 !important;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 9px solid #f5a524;
+  border-radius: 0;
+  margin-left: 3px;
+  margin-top: 3px;
+}
+.pide-debug-line {
+  background: rgba(245, 165, 36, 0.15);
+}
+
+/* ── Bottom panel / terminal chrome ── */
+.pide-bottom-panel {
+  position: relative;
+  border-top: 1px solid color-mix(in srgb, var(--pide-panel-border) 80%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--pide-panel-background) 92%, #1a2438) 0%,
+      var(--pide-panel-background) 40%
+    );
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.pide-bottom-resize {
+  height: 3px;
+  cursor: row-resize;
+  background: transparent;
+  position: relative;
+  z-index: 2;
+}
+.pide-bottom-resize::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pide-focusBorder) 35%, transparent);
+  transition: width 150ms ease, background 150ms ease;
+}
+.pide-bottom-resize:hover::after {
+  width: 56px;
+  background: var(--pide-focusBorder);
+}
+
+.pide-bottom-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 0;
+  min-height: 34px;
+  border-bottom: 1px solid color-mix(in srgb, var(--pide-panel-border) 70%, transparent);
+  background: color-mix(in srgb, var(--pide-panel-background) 70%, transparent);
+}
+
+.pide-bottom-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--pide-panelTitle-inactiveForeground);
+  border-radius: 8px 8px 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  transition: color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.pide-bottom-tab:hover {
+  color: var(--pide-panelTitle-activeForeground);
+  background: color-mix(in srgb, var(--pide-list-hoverBackground) 70%, transparent);
+}
+.pide-bottom-tab-active {
+  color: var(--pide-panelTitle-activeForeground);
+  background: color-mix(in srgb, var(--pide-editor-background) 88%, #152038);
+  border-color: color-mix(in srgb, var(--pide-panel-border) 80%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 6%, transparent);
+  position: relative;
+}
+.pide-bottom-tab-active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(90deg, transparent, var(--pide-focusBorder), transparent);
+}
+
+.pide-bottom-badge {
+  min-width: 1.1rem;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1.4;
+  background: color-mix(in srgb, var(--pide-errorForeground) 22%, transparent);
+  color: var(--pide-errorForeground);
+}
+
+.pide-bottom-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--pide-descriptionForeground);
+  transition: color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+.pide-bottom-icon-btn:hover {
+  color: var(--pide-foreground);
+  background: var(--pide-list-hoverBackground);
+}
+.pide-bottom-icon-btn:active {
+  transform: scale(0.94);
+}
+.pide-bottom-icon-btn-danger:hover {
+  color: var(--pide-errorForeground);
+  background: color-mix(in srgb, var(--pide-errorForeground) 14%, transparent);
+}
+
+.pide-term-session-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--pide-panel-border) 55%, transparent);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--pide-editor-background) 40%, transparent),
+    transparent 60%
+  );
+}
+
+.pide-term-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 9.5rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--pide-descriptionForeground);
+  border: 1px solid transparent;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+.pide-term-session:hover {
+  color: var(--pide-foreground);
+  background: var(--pide-list-hoverBackground);
+}
+.pide-term-session-active {
+  color: var(--pide-foreground);
+  background: color-mix(in srgb, var(--pide-list-activeSelectionBackground) 85%, transparent);
+  border-color: color-mix(in srgb, var(--pide-focusBorder) 35%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pide-focusBorder) 18%, transparent);
+}
+
+.pide-term-session-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4a5568;
+  flex-shrink: 0;
+}
+.pide-term-session-dot.is-live {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
+  animation: pide-term-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pide-term-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.pide-term-cwd {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  color: color-mix(in srgb, var(--pide-descriptionForeground) 85%, transparent);
+  letter-spacing: 0.02em;
+}
+
+.pide-term-host {
+  margin: 6px 8px 8px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--pide-panel-border) 75%, #3d7eff22);
+  background:
+    radial-gradient(120% 80% at 0% 0%, #3d7eff12, transparent 45%),
+    linear-gradient(180deg, #0a0e14 0%, #0d1219 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 8px 24px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.pide-term-viewport {
+  padding: 8px 10px 10px;
+}
+
+.pide-term-viewport .xterm {
+  height: 100%;
+}
+.pide-term-viewport .xterm-viewport {
+  overflow-y: auto !important;
+}
+.pide-term-viewport .xterm-screen {
+  padding-right: 4px;
+}
+
+.pide-bottom-body {
+  background: color-mix(in srgb, var(--pide-editor-background) 55%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pide-term-session-dot.is-live {
+    animation: none;
+  }
+}

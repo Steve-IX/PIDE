@@ -20,8 +20,15 @@ serde_json = "1"
 thiserror = "2"
 keyring = "3"
 ureq = { version = "2", features = ["json"] }
+portable-pty = "0.8"
+wasmtime = "47.0.3"
+wasmtime-wasi = "47.0.3"
+tauri-plugin-clipboard-manager = "2"
 
 [profile.release]
 panic = "abort"
 codegen-units = 1
 lto = true
+
+[target.x86_64-pc-windows-msvc.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }

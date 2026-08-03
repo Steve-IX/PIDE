@@ -11,6 +11,7 @@ import {
 } from "../theme";
 import type { PerfProfile, UiDensity } from "../types";
 import { PERF_PROFILES, resolvePerfConfig } from "../services/perfProfiles";
+import LlamaSidecarControls from "./LlamaSidecarControls";
 
 export default function SettingsPane() {
   const settings = useIdeStore((s) => s.settings);
@@ -228,12 +229,15 @@ export default function SettingsPane() {
               maxAttachChars: settings.maxAttachChars,
               keepAlive: settings.ollamaKeepAlive,
               numGpu: settings.ollamaNumGpu,
+              hyperSpeed: settings.hyperSpeed,
             });
             return (
               <p className="text-[11px] text-pide-muted leading-relaxed">
-                Effective: ctx {p.options.num_ctx}, max reply {p.options.num_predict},
-                history {p.maxHistoryMessages} msgs, attach ≤{p.maxAttachChars} chars,
-                keep_alive {p.keepAlive}
+                Effective{settings.hyperSpeed ? " (Hyper-Speed)" : ""}: ctx{" "}
+                {p.options.num_ctx}, max reply {p.options.num_predict}, history{" "}
+                {p.maxHistoryMessages} msgs, attach ≤{p.maxAttachChars} chars, keep_alive{" "}
+                {p.keepAlive}
+                {p.options.num_gpu != null ? `, num_gpu ${p.options.num_gpu}` : ""}
               </p>
             );
           })()}
@@ -279,7 +283,7 @@ export default function SettingsPane() {
           </label>
           <label className="block space-y-1">
             <span className="text-xs text-pide-muted">
-              GPU layers override (blank = Ollama default)
+              GPU layers override (blank = Ollama default; Hyper-Speed uses 99)
             </span>
             <input
               type="number"
@@ -295,6 +299,52 @@ export default function SettingsPane() {
               className="w-full bg-pide-input border border-pide-input-border rounded px-2 py-1.5 text-pide-input-fg text-sm"
             />
           </label>
+          <label className="flex items-start gap-2 text-sm pt-1">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={settings.hyperSpeed}
+              onChange={(e) => updateSettings({ hyperSpeed: e.target.checked })}
+            />
+            <span>
+              <span className="text-pide-fg">Hyper-Speed</span>
+              <span className="block text-[11px] text-pide-muted leading-snug">
+                Tight context, high GPU offload, Auto prefers 1.5B for Ask/Agent — target 40–70
+                tok/s on Iris Xe.
+              </span>
+            </span>
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs text-pide-muted">Inference backend</span>
+            <select
+              value={settings.inferenceBackend}
+              onChange={(e) => {
+                updateSettings({
+                  inferenceBackend: e.target.value as "ollama" | "llamaCpp",
+                });
+                void refreshOllama();
+              }}
+              className="w-full bg-pide-input border border-pide-input-border rounded px-2 py-1.5 text-pide-input-fg text-sm"
+            >
+              <option value="ollama">Ollama (default)</option>
+              <option value="llamaCpp">llama.cpp server (ngram speculation)</option>
+            </select>
+          </label>
+          {settings.inferenceBackend === "llamaCpp" ? (
+            <label className="block space-y-1">
+              <span className="text-xs text-pide-muted">llama-server base URL</span>
+              <input
+                value={settings.llamaCppBaseUrl}
+                onChange={(e) => updateSettings({ llamaCppBaseUrl: e.target.value })}
+                onBlur={() => void refreshOllama()}
+                placeholder="http://127.0.0.1:8080"
+                className="w-full bg-pide-input border border-pide-input-border rounded px-2 py-1.5 text-pide-input-fg text-sm font-mono"
+              />
+            </label>
+          ) : null}
+          <div className="rounded-lg border border-pide-sidebar-border bg-pide-editor p-2.5">
+            <LlamaSidecarControls />
+          </div>
         </div>
 
         <label className="block space-y-1">
@@ -338,6 +388,61 @@ export default function SettingsPane() {
           />
           Save after apply / create
         </label>
+
+        <div className="space-y-2 pt-2 border-t border-pide-sidebar-border">
+          <span className="text-xs text-pide-muted uppercase tracking-wide">Sandbox</span>
+          <p className="text-[11px] text-pide-muted leading-relaxed">
+            Wasmtime (.wasm WASI) and limited host runs. Interactive Run File / PTY are
+            unaffected.
+          </p>
+          <label className="block space-y-1">
+            <span className="text-xs text-pide-muted">
+              Wall time ({settings.sandboxWallSeconds}s)
+            </span>
+            <input
+              type="range"
+              min={1}
+              max={60}
+              value={settings.sandboxWallSeconds}
+              onChange={(e) =>
+                updateSettings({ sandboxWallSeconds: Number(e.target.value) })
+              }
+              className="w-full"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs text-pide-muted">
+              Wasm memory ({settings.sandboxWasmMemoryMib} MiB)
+            </span>
+            <input
+              type="range"
+              min={8}
+              max={256}
+              step={8}
+              value={settings.sandboxWasmMemoryMib}
+              onChange={(e) =>
+                updateSettings({ sandboxWasmMemoryMib: Number(e.target.value) })
+              }
+              className="w-full"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs text-pide-muted">
+              Host limited memory ({settings.sandboxHostMemoryMib} MiB)
+            </span>
+            <input
+              type="range"
+              min={32}
+              max={1024}
+              step={32}
+              value={settings.sandboxHostMemoryMib}
+              onChange={(e) =>
+                updateSettings({ sandboxHostMemoryMib: Number(e.target.value) })
+              }
+              className="w-full"
+            />
+          </label>
+        </div>
 
         <div className="space-y-2 pt-2 border-t border-pide-sidebar-border">
           <span className="text-xs text-pide-muted uppercase tracking-wide">GitHub</span>

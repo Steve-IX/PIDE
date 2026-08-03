@@ -2,11 +2,13 @@ import { create } from "zustand";
 import type {
   AppSettings,
   ChatMessage,
+  ConfirmDialogState,
   DiffApplyRequest,
   FileNode,
   OpenTab,
   PaletteMode,
   ProblemItem,
+  PromptDialogState,
   RevealRequest,
   SidebarView,
   Toast,
@@ -28,7 +30,11 @@ import {
   renamePath,
   writeFile,
 } from "../services/fs";
-import { checkOllamaOnline, fetchModels, warmModel } from "../services/ollama";
+import { warmModel } from "../services/ollama";
+import {
+  checkInferenceOnline,
+  fetchInferenceModels,
+} from "../services/llmChat";
 import { resolvePerfConfig } from "../services/perfProfiles";
 import {
   loadSessions,
@@ -39,6 +45,41 @@ import {
 } from "../utils/sessions";
 import type { FileProposal } from "../utils/proposals";
 import { parseFileProposals } from "../utils/proposals";
+import type { PideTask } from "../services/tasks";
+import type { PideLaunchConfig } from "../services/launch";
+import {
+  COMPILER_PROBLEM_SOURCES,
+  DiagnosticLineBuffer,
+} from "../services/diagnosticParsers";
+
+export type DebugState = "idle" | "starting" | "running" | "stopped";
+
+export interface DebugStackFrame {
+  id: number;
+  name: string;
+  sourcePath?: string;
+  line?: number;
+  column?: number;
+}
+
+export interface DebugVariable {
+  name: string;
+  value: string;
+  type?: string;
+  variablesReference: number;
+}
+
+export interface PtySessionMeta {
+  id: string;
+  title: string;
+}
+
+const MAX_PTY_SESSIONS = 4;
+const diagBuffer = new DiagnosticLineBuffer();
+let diagIdleTimer: number | null = null;
+let dapUnlisten: (() => void) | null = null;
+let dapInitializedWaiter: (() => void) | null = null;
+let dapInitializedFlag = false;
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -65,6 +106,115 @@ function remapTabPath(tabs: OpenTab[], from: string, to: string): OpenTab[] {
   });
 }
 
+type GetSet = {
+  get: () => IdeState;
+  set: (
+    partial:
+      | Partial<IdeState>
+      | ((s: IdeState) => Partial<IdeState>),
+  ) => void;
+};
+
+async function refreshStackAndVars(
+  get: () => IdeState,
+  set: GetSet["set"],
+  threadId: number,
+) {
+  const dap = await import("../services/dap");
+  const stackRes = await dap.dapStackTrace(threadId);
+  const body = stackRes.body as {
+    stackFrames?: Array<{
+      id: number;
+      name: string;
+      line?: number;
+      column?: number;
+      source?: { path?: string };
+    }>;
+  };
+  const frames: DebugStackFrame[] = (body?.stackFrames ?? []).map((f) => ({
+    id: f.id,
+    name: f.name,
+    sourcePath: f.source?.path,
+    line: f.line,
+    column: f.column,
+  }));
+  set({ debugStackFrames: frames });
+  const top = frames[0];
+  if (top) {
+    if (top.sourcePath && top.line) {
+      set({
+        debugStoppedPath: top.sourcePath,
+        debugStoppedLine: top.line,
+      });
+      void get().openFileAt(top.sourcePath, top.line, top.column ?? 1);
+    }
+    await get().selectDebugFrame(top.id);
+  }
+}
+
+async function handleDapMessage(
+  get: () => IdeState,
+  set: GetSet["set"],
+  payload: { kind: string; body: Record<string, unknown> },
+) {
+  const body = payload.body;
+  if (payload.kind === "event") {
+    const event = String(body.event ?? "");
+    if (event === "initialized") {
+      dapInitializedFlag = true;
+      dapInitializedWaiter?.();
+      return;
+    }
+    if (event === "stopped") {
+      const evBody = (body.body ?? {}) as { threadId?: number; reason?: string };
+      const threadId = evBody.threadId ?? 1;
+      set({
+        debugState: "stopped",
+        debugThreadId: threadId,
+        debugStopReason: evBody.reason ?? "stopped",
+      });
+      try {
+        await refreshStackAndVars(get, set, threadId);
+      } catch {
+        /* adapter may not be ready */
+      }
+      return;
+    }
+    if (event === "continued") {
+      set({
+        debugState: "running",
+        debugStoppedPath: null,
+        debugStoppedLine: null,
+      });
+      return;
+    }
+    if (event === "output") {
+      const evBody = (body.body ?? {}) as { output?: string; category?: string };
+      if (!evBody.output) return;
+      const line = evBody.output.replace(/\r?\n$/, "");
+      const cat = evBody.category ?? "console";
+      // Program stdout/console → Debug tab; adapter stderr noise → Output
+      if (cat === "stderr" || cat === "telemetry") {
+        get().appendOutput(line);
+      } else {
+        get().appendDebugConsole(line);
+      }
+      return;
+    }
+    if (event === "terminated" || event === "exited" || event === "pideTerminated") {
+      set({
+        debugState: "idle",
+        debugThreadId: null,
+        debugStackFrames: [],
+        debugVariables: [],
+        debugStoppedPath: null,
+        debugStoppedLine: null,
+      });
+      return;
+    }
+  }
+}
+
 interface IdeState {
   workspacePath: string;
   tree: FileNode | null;
@@ -74,12 +224,34 @@ interface IdeState {
   sidebarOpen: boolean;
   chatOpen: boolean;
   bottomPanelOpen: boolean;
-  bottomPanelTab: "terminal" | "output" | "problems";
+  bottomPanelTab: "terminal" | "output" | "problems" | "debug";
+  /** Live interactive PTY session id (null if terminal not mounted). */
+  activePtyId: string | null;
+  /** Command to inject once the PTY is ready. */
+  pendingPtyWrite: string | null;
+  /** Metadata for multi-session terminals. */
+  ptySessions: PtySessionMeta[];
+  /** BottomPanel should create a session with this title. */
+  pendingPtySessionTitle: string | null;
+  workspaceTasks: PideTask[];
+  workspaceLaunchConfigs: PideLaunchConfig[];
+  diagnosticsCapture: boolean;
+  /** path -> breakpoint lines */
+  breakpoints: Record<string, number[]>;
+  debugState: DebugState;
+  debugThreadId: number | null;
+  debugStackFrames: DebugStackFrame[];
+  debugVariables: DebugVariable[];
+  debugStopReason: string;
+  debugStoppedPath: string | null;
+  debugStoppedLine: number | null;
   models: string[];
   selectedModel: string;
   ollamaOnline: boolean;
   messages: ChatMessage[];
   chatStreaming: boolean;
+  /** Last completed generation tok/s (for status bar). */
+  lastTokensPerSec: number | null;
   statusError: string;
   monacoEditor: unknown | null;
   toasts: Toast[];
@@ -87,23 +259,65 @@ interface IdeState {
   paletteMode: PaletteMode;
   diffRequest: DiffApplyRequest | null;
   outputLines: string[];
+  /** Program / DAP console stdout shown in the Debug tab. */
+  debugConsoleLines: string[];
   createFileDialog: { parentDir: string; initialName: string; content: string } | null;
+  confirmDialog: ConfirmDialogState | null;
+  promptDialog: PromptDialogState | null;
   problems: ProblemItem[];
   revealRequest: RevealRequest | null;
   chatSessions: ChatSession[];
   activeSessionId: string;
   fileProposals: FileProposal[];
 
+  requestConfirm: (opts: Omit<ConfirmDialogState, "resolve">) => Promise<boolean>;
+  requestPrompt: (opts: Omit<PromptDialogState, "resolve">) => Promise<string | null>;
   setSidebarView: (view: SidebarView) => void;
   focusSidebarView: (view: SidebarView) => void;
   toggleSidebar: () => void;
   toggleChat: () => void;
   toggleBottomPanel: () => void;
   setBottomPanelOpen: (open: boolean) => void;
-  setBottomPanelTab: (tab: "terminal" | "output" | "problems") => void;
+  setBottomPanelTab: (tab: "terminal" | "output" | "problems" | "debug") => void;
+  setActivePtyId: (id: string | null) => void;
+  /** Queue or send text to the live PTY (opens terminal). */
+  writeToPty: (data: string) => Promise<void>;
+  /** Save + Run Current File via language runner into the PTY. */
+  runActiveFile: () => Promise<void>;
+  /** Run active .wasm via Wasmtime WASI sandbox. */
+  runActiveFileInSandbox: () => Promise<void>;
+  cancelSandbox: () => Promise<void>;
+  /** One-shot host command under Job Object / wall limits. */
+  runLimitedCommand: (opts: {
+    program: string;
+    args?: string[];
+    cwd?: string;
+  }) => Promise<void>;
+  registerPtySession: (id: string, title: string) => void;
+  unregisterPtySession: (id: string) => void;
+  focusPtySession: (id: string) => void;
+  requestPtySession: (title: string) => void;
+  clearPendingPtySession: () => void;
+  refreshWorkspaceTasks: () => Promise<void>;
+  refreshWorkspaceLaunchConfigs: () => Promise<void>;
+  runTask: (label: string) => Promise<void>;
+  runDefaultBuildTask: () => Promise<void>;
+  beginDiagnosticsCapture: () => void;
+  appendPtyOutputForDiagnostics: (chunk: string) => void;
+  clearProblemsBySources: (sources: string[]) => void;
+  toggleBreakpoint: (path: string, line: number) => void;
+  setBreakpointsForPath: (path: string, lines: number[]) => void;
+  startDebugging: (configName?: string) => Promise<void>;
+  stopDebugging: () => Promise<void>;
+  debugContinue: () => Promise<void>;
+  debugStepOver: () => Promise<void>;
+  debugStepIn: () => Promise<void>;
+  debugStepOut: () => Promise<void>;
+  selectDebugFrame: (frameId: number) => Promise<void>;
   setSelectedModel: (model: string) => void;
   setMessages: (messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
   setChatStreaming: (v: boolean) => void;
+  setLastTokensPerSec: (v: number | null) => void;
   setMonacoEditor: (editor: unknown | null) => void;
   setStatusError: (msg: string) => void;
   pushToast: (kind: ToastKind, message: string) => void;
@@ -115,6 +329,8 @@ interface IdeState {
     dialog: { parentDir: string; initialName: string; content: string } | null,
   ) => void;
   appendOutput: (line: string) => void;
+  appendDebugConsole: (line: string) => void;
+  clearDebugConsole: () => void;
   addProblem: (problem: Omit<ProblemItem, "id">) => void;
   clearProblems: () => void;
   clearReveal: () => void;
@@ -134,9 +350,9 @@ interface IdeState {
   refreshTree: () => Promise<void>;
   openFile: (path: string, opts?: { forceReload?: boolean }) => Promise<void>;
   setActiveTab: (path: string) => void;
-  closeTab: (path: string, opts?: { force?: boolean }) => boolean;
-  closeOtherTabs: (path: string) => void;
-  closeAllTabs: () => void;
+  closeTab: (path: string, opts?: { force?: boolean }) => Promise<boolean>;
+  closeOtherTabs: (path: string) => Promise<void>;
+  closeAllTabs: () => Promise<void>;
   updateActiveContent: (content: string) => void;
   saveActiveFile: () => Promise<void>;
   saveFilePath: (path: string) => Promise<void>;
@@ -167,11 +383,27 @@ export const useIdeStore = create<IdeState>((set, get) => ({
   chatOpen: true,
   bottomPanelOpen: initialSettings.bottomPanelOpen,
   bottomPanelTab: "terminal",
+  activePtyId: null,
+  pendingPtyWrite: null,
+  ptySessions: [],
+  pendingPtySessionTitle: null,
+  workspaceTasks: [],
+  workspaceLaunchConfigs: [],
+  diagnosticsCapture: false,
+  breakpoints: {},
+  debugState: "idle",
+  debugThreadId: null,
+  debugStackFrames: [],
+  debugVariables: [],
+  debugStopReason: "",
+  debugStoppedPath: null,
+  debugStoppedLine: null,
   models: [],
   selectedModel: "",
   ollamaOnline: false,
   messages: [],
   chatStreaming: false,
+  lastTokensPerSec: null,
   statusError: "",
   monacoEditor: null,
   toasts: [],
@@ -179,12 +411,41 @@ export const useIdeStore = create<IdeState>((set, get) => ({
   paletteMode: null,
   diffRequest: null,
   outputLines: [],
+  debugConsoleLines: [],
   createFileDialog: null,
+  confirmDialog: null,
+  promptDialog: null,
   problems: [],
   revealRequest: null,
   chatSessions: [],
   activeSessionId: "",
   fileProposals: [],
+
+  requestConfirm: (opts) =>
+    new Promise((resolve) => {
+      set({
+        confirmDialog: {
+          ...opts,
+          resolve: (ok) => {
+            set({ confirmDialog: null });
+            resolve(ok);
+          },
+        },
+      });
+    }),
+
+  requestPrompt: (opts) =>
+    new Promise((resolve) => {
+      set({
+        promptDialog: {
+          ...opts,
+          resolve: (value) => {
+            set({ promptDialog: null });
+            resolve(value);
+          },
+        },
+      });
+    }),
 
   setSidebarView: (view) =>
     set((s) => ({
@@ -208,12 +469,602 @@ export const useIdeStore = create<IdeState>((set, get) => ({
       return { bottomPanelOpen: open, settings };
     }),
   setBottomPanelTab: (tab) => set({ bottomPanelTab: tab }),
+  setActivePtyId: (id) => set({ activePtyId: id }),
+  registerPtySession: (id, title) =>
+    set((s) => {
+      if (s.ptySessions.some((p) => p.id === id)) {
+        return {
+          ptySessions: s.ptySessions.map((p) => (p.id === id ? { id, title } : p)),
+          activePtyId: id,
+        };
+      }
+      return {
+        ptySessions: [...s.ptySessions, { id, title }].slice(-MAX_PTY_SESSIONS),
+        activePtyId: id,
+      };
+    }),
+  unregisterPtySession: (id) =>
+    set((s) => {
+      const ptySessions = s.ptySessions.filter((p) => p.id !== id);
+      const activePtyId =
+        s.activePtyId === id ? (ptySessions[ptySessions.length - 1]?.id ?? null) : s.activePtyId;
+      return { ptySessions, activePtyId };
+    }),
+  focusPtySession: (id) => set({ activePtyId: id }),
+  requestPtySession: (title) => {
+    get().setBottomPanelOpen(true);
+    get().setBottomPanelTab("terminal");
+    const existing = get().ptySessions.find((p) => p.title === title);
+    if (existing) {
+      set({ activePtyId: existing.id, pendingPtySessionTitle: null });
+      return;
+    }
+    if (get().ptySessions.length >= MAX_PTY_SESSIONS) {
+      get().pushToast("error", `Max ${MAX_PTY_SESSIONS} terminal sessions`);
+      return;
+    }
+    set({ pendingPtySessionTitle: title });
+  },
+  clearPendingPtySession: () => set({ pendingPtySessionTitle: null }),
+  clearProblemsBySources: (sources) => {
+    const setSources = new Set(sources);
+    set((s) => ({
+      problems: s.problems.filter((p) => !setSources.has(p.source)),
+    }));
+  },
+  beginDiagnosticsCapture: () => {
+    diagBuffer.reset();
+    get().clearProblemsBySources([...COMPILER_PROBLEM_SOURCES]);
+    set({ diagnosticsCapture: true });
+    if (diagIdleTimer != null) window.clearTimeout(diagIdleTimer);
+    diagIdleTimer = window.setTimeout(() => {
+      set({ diagnosticsCapture: false });
+      diagIdleTimer = null;
+    }, 120_000);
+  },
+  appendPtyOutputForDiagnostics: (chunk) => {
+    if (!get().diagnosticsCapture) return;
+    const { workspacePath, addProblem } = get();
+    const drafts = diagBuffer.feed(chunk, workspacePath);
+    for (const d of drafts) addProblem(d);
+    if (diagIdleTimer != null) window.clearTimeout(diagIdleTimer);
+    diagIdleTimer = window.setTimeout(() => {
+      set({ diagnosticsCapture: false });
+      diagIdleTimer = null;
+    }, 2000);
+  },
+  refreshWorkspaceTasks: async () => {
+    const { workspacePath } = get();
+    if (!workspacePath) {
+      set({ workspaceTasks: [] });
+      return;
+    }
+    const { loadWorkspaceTasks } = await import("../services/tasks");
+    const workspaceTasks = await loadWorkspaceTasks(workspacePath);
+    set({ workspaceTasks });
+  },
+  refreshWorkspaceLaunchConfigs: async () => {
+    const { workspacePath } = get();
+    if (!workspacePath) {
+      set({ workspaceLaunchConfigs: [] });
+      return;
+    }
+    const { loadWorkspaceLaunchConfigs } = await import("../services/launch");
+    const workspaceLaunchConfigs = await loadWorkspaceLaunchConfigs(workspacePath);
+    set({ workspaceLaunchConfigs });
+  },
+  toggleBreakpoint: (path, line) => {
+    set((s) => {
+      const cur = new Set(s.breakpoints[path] ?? []);
+      if (cur.has(line)) cur.delete(line);
+      else cur.add(line);
+      const lines = [...cur].sort((a, b) => a - b);
+      const breakpoints = { ...s.breakpoints };
+      if (lines.length) breakpoints[path] = lines;
+      else delete breakpoints[path];
+      return { breakpoints };
+    });
+    const { debugState, breakpoints } = get();
+    if (debugState !== "idle") {
+      void import("../services/dap").then((dap) =>
+        dap.dapSetBreakpoints(path, breakpoints[path] ?? []).catch(() => undefined),
+      );
+    }
+  },
+  setBreakpointsForPath: (path, lines) => {
+    set((s) => {
+      const breakpoints = { ...s.breakpoints };
+      const uniq = [...new Set(lines)].sort((a, b) => a - b);
+      if (uniq.length) breakpoints[path] = uniq;
+      else delete breakpoints[path];
+      return { breakpoints };
+    });
+  },
+  startDebugging: async (configName) => {
+    const {
+      workspaceLaunchConfigs,
+      refreshWorkspaceLaunchConfigs,
+      workspacePath,
+      pushToast,
+      setBottomPanelOpen,
+      setBottomPanelTab,
+      activePath,
+    } = get();
+    if (!workspacePath) {
+      pushToast("error", "Open a workspace first");
+      return;
+    }
+    if (!workspaceLaunchConfigs.length) await refreshWorkspaceLaunchConfigs();
+    const configs = get().workspaceLaunchConfigs;
+    const { pickDefaultLaunchConfig, resolveLaunchAdapter } = await import(
+      "../services/launch"
+    );
+    const config = configName
+      ? configs.find((c) => c.name === configName)
+      : pickDefaultLaunchConfig(configs, activePath || null);
+    if (!config) {
+      pushToast(
+        "error",
+        "No launch.json configs. Add .vscode/launch.json (type: python + debugpy).",
+      );
+      return;
+    }
+
+    let resolved;
+    try {
+      resolved = resolveLaunchAdapter(config, workspacePath, activePath || null);
+    } catch (err) {
+      pushToast("error", err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    // Persist buffer so debugpy hits the same lines as the editor.
+    try {
+      await get().saveActiveFile();
+    } catch {
+      /* non-fatal */
+    }
+
+    // Fresh breakpoint map after any path remaps / saves
+    const bpMap = get().breakpoints;
+
+    const dap = await import("../services/dap");
+    if (await dap.dapIsActive()) {
+      await dap.dapStop();
+    }
+
+    set({
+      debugState: "starting",
+      debugStackFrames: [],
+      debugVariables: [],
+      debugStopReason: "",
+      debugThreadId: null,
+      debugStoppedPath: null,
+      debugStoppedLine: null,
+      debugConsoleLines: [],
+    });
+    setBottomPanelOpen(true);
+    setBottomPanelTab("debug");
+    dapInitializedFlag = false;
+    dapInitializedWaiter = null;
+
+    if (dapUnlisten) {
+      dapUnlisten();
+      dapUnlisten = null;
+    }
+    dapUnlisten = await dap.listenDapMessages((payload) => {
+      void handleDapMessage(get, set, payload);
+    });
+
+    const programPath =
+      typeof resolved.requestArgs.program === "string"
+        ? resolved.requestArgs.program
+        : activePath || null;
+
+    // Prefer absolute program path with normalized separators for debugpy.
+    if (typeof resolved.requestArgs.program === "string") {
+      resolved.requestArgs.program = dap.normalizeDapPath(resolved.requestArgs.program);
+    }
+
+    try {
+      try {
+        await dap.dapStart({
+          adapterCommand: resolved.adapterCommand,
+          adapterArgs: resolved.adapterArgs,
+          cwd: resolved.cwd,
+        });
+      } catch (err) {
+        if (resolved.adapterCommand === "python") {
+          await dap.dapStart({
+            adapterCommand: "py",
+            adapterArgs: ["-3", "-u", "-m", "debugpy.adapter"],
+            cwd: resolved.cwd,
+          });
+        } else {
+          throw err;
+        }
+      }
+
+      const isDebugpy =
+        config.type === "python" ||
+        config.type === "debugpy" ||
+        resolved.adapterArgs.some((a) => String(a).includes("debugpy"));
+
+      const waitInitialized = (ms: number) =>
+        new Promise<void>((resolve, reject) => {
+          if (dapInitializedFlag) {
+            resolve();
+            return;
+          }
+          const t = window.setTimeout(
+            () =>
+              reject(
+                new Error(
+                  isDebugpy
+                    ? "DAP initialized event timeout (debugpy). Check Output for adapter errors."
+                    : "DAP initialized event timeout",
+                ),
+              ),
+            ms,
+          );
+          dapInitializedWaiter = () => {
+            window.clearTimeout(t);
+            dapInitializedWaiter = null;
+            resolve();
+          };
+          // Event may have raced in
+          if (dapInitializedFlag) {
+            window.clearTimeout(t);
+            dapInitializedWaiter = null;
+            resolve();
+          }
+        });
+
+      const applyBps = async () => {
+        const result = await dap.dapApplyBreakpoints(bpMap, programPath);
+        for (const d of result.details) get().appendOutput(`DAP BP: ${d}`);
+        if (result.total > 0 && result.verified === 0) {
+          pushToast(
+            "error",
+            "Breakpoints not verified by debugpy — check Output (path mismatch?).",
+          );
+        } else if (result.verified > 0) {
+          get().appendOutput(
+            `DAP: ${result.verified}/${result.total} breakpoint(s) verified`,
+          );
+        }
+      };
+
+      get().appendOutput(`DAP: starting ${config.name} (${resolved.adapterCommand})`);
+      await dap.dapInitialize();
+      get().appendOutput("DAP: initialize response OK");
+
+      if (isDebugpy) {
+        // debugpy / VS Code order: launch → initialized → setBreakpoints → configurationDone
+        // (launch response is deferred until configurationDone)
+        const launchPromise =
+          resolved.request === "attach"
+            ? dap.dapAttach(resolved.requestArgs)
+            : dap.dapLaunch(resolved.requestArgs);
+        await waitInitialized(30000);
+        get().appendOutput("DAP: initialized (after launch)");
+        await applyBps();
+        await dap.dapConfigurationDone();
+        const launchOrAttach = await launchPromise;
+        if (launchOrAttach.success === false) {
+          const message =
+            typeof launchOrAttach.message === "string"
+              ? launchOrAttach.message
+              : `DAP ${resolved.request} failed`;
+          throw new Error(message);
+        }
+      } else {
+        await waitInitialized(15000);
+        get().appendOutput("DAP: initialized");
+        await applyBps();
+        await dap.dapConfigurationDone();
+        const launchOrAttach =
+          resolved.request === "attach"
+            ? await dap.dapAttach(resolved.requestArgs)
+            : await dap.dapLaunch(resolved.requestArgs);
+        if (launchOrAttach.success === false) {
+          const message =
+            typeof launchOrAttach.message === "string"
+              ? launchOrAttach.message
+              : `DAP ${resolved.request} failed`;
+          throw new Error(message);
+        }
+      }
+
+      // Don't clobber an early breakpoint stop that raced in during launch.
+      set((s) => ({
+        debugState: s.debugState === "stopped" ? "stopped" : "running",
+      }));
+      pushToast("info", `Debugging: ${config.name}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const hint =
+        (resolved.adapterCommand === "python" || resolved.adapterCommand === "py") &&
+        /not found|Failed to start|No module/i.test(msg)
+          ? " Install debugpy: pip install debugpy"
+          : "";
+      pushToast("error", `${msg}${hint ? `.${hint}` : ""}`.replace(/\.\./g, "."));
+      set({ debugState: "idle" });
+      try {
+        await dap.dapStop();
+      } catch {
+        /* ignore */
+      }
+    }
+  },
+  stopDebugging: async () => {
+    const dap = await import("../services/dap");
+    try {
+      await dap.dapStop();
+    } catch {
+      /* ignore */
+    }
+    if (dapUnlisten) {
+      dapUnlisten();
+      dapUnlisten = null;
+    }
+    set({
+      debugState: "idle",
+      debugThreadId: null,
+      debugStackFrames: [],
+      debugVariables: [],
+      debugStopReason: "",
+      debugStoppedPath: null,
+      debugStoppedLine: null,
+    });
+  },
+  debugContinue: async () => {
+    const { debugThreadId } = get();
+    if (debugThreadId == null) return;
+    const dap = await import("../services/dap");
+    await dap.dapContinue(debugThreadId);
+    set({
+      debugState: "running",
+      debugStoppedPath: null,
+      debugStoppedLine: null,
+    });
+  },
+  debugStepOver: async () => {
+    const { debugThreadId } = get();
+    if (debugThreadId == null) return;
+    const dap = await import("../services/dap");
+    await dap.dapNext(debugThreadId);
+  },
+  debugStepIn: async () => {
+    const { debugThreadId } = get();
+    if (debugThreadId == null) return;
+    const dap = await import("../services/dap");
+    await dap.dapStepIn(debugThreadId);
+  },
+  debugStepOut: async () => {
+    const { debugThreadId } = get();
+    if (debugThreadId == null) return;
+    const dap = await import("../services/dap");
+    await dap.dapStepOut(debugThreadId);
+  },
+  selectDebugFrame: async (frameId) => {
+    const dap = await import("../services/dap");
+    const frame = get().debugStackFrames.find((f) => f.id === frameId);
+    if (frame?.sourcePath && frame.line) {
+      set({
+        debugStoppedPath: frame.sourcePath,
+        debugStoppedLine: frame.line,
+      });
+      void get().openFileAt(frame.sourcePath, frame.line, frame.column ?? 1);
+    }
+    const scopesRes = await dap.dapScopes(frameId);
+    const body = scopesRes.body as { scopes?: Array<{ variablesReference: number }> } | undefined;
+    const scopes = body?.scopes ?? [];
+    const vars: DebugVariable[] = [];
+    for (const scope of scopes.slice(0, 3)) {
+      if (!scope.variablesReference) continue;
+      const vRes = await dap.dapVariables(scope.variablesReference);
+      const vBody = vRes.body as {
+        variables?: Array<{
+          name: string;
+          value: string;
+          type?: string;
+          variablesReference: number;
+        }>;
+      };
+      for (const v of vBody?.variables ?? []) {
+        vars.push({
+          name: v.name,
+          value: v.value,
+          type: v.type,
+          variablesReference: v.variablesReference,
+        });
+      }
+    }
+    set({ debugVariables: vars.slice(0, 80) });
+  },
+  runTask: async (label) => {
+    const { workspaceTasks, workspacePath, writeToPty, pushToast, appendOutput, requestPtySession } =
+      get();
+    const task = workspaceTasks.find((t) => t.label === label);
+    if (!task) {
+      pushToast("error", `Unknown task: ${label}`);
+      return;
+    }
+    const { resolveTaskCommand } = await import("../services/tasks");
+    const command = resolveTaskCommand(task, workspacePath);
+    get().beginDiagnosticsCapture();
+    appendOutput(`Task (${label}): ${command}`);
+    requestPtySession(`Task: ${label}`);
+    // Allow BottomPanel to create session, then write.
+    window.setTimeout(() => {
+      void writeToPty(`${command}\r`);
+    }, 500);
+    pushToast("info", `Running task: ${label}`);
+  },
+  runDefaultBuildTask: async () => {
+    const { workspaceTasks, refreshWorkspaceTasks, pushToast } = get();
+    if (!workspaceTasks.length) await refreshWorkspaceTasks();
+    const tasks = get().workspaceTasks;
+    const { pickDefaultBuildTask } = await import("../services/tasks");
+    const task = pickDefaultBuildTask(tasks);
+    if (!task) {
+      pushToast("error", "No tasks found (.vscode/tasks.json or .pide/tasks.json)");
+      return;
+    }
+    await get().runTask(task.label);
+  },
+  writeToPty: async (data) => {
+    const { activePtyId } = get();
+    get().setBottomPanelOpen(true);
+    get().setBottomPanelTab("terminal");
+    if (activePtyId) {
+      const { ptyWrite } = await import("../services/pty");
+      await ptyWrite(activePtyId, data);
+      return;
+    }
+    set({ pendingPtyWrite: data });
+  },
+  runActiveFile: async () => {
+    const { tabs, activePath, saveActiveFile, writeToPty, pushToast, appendOutput } = get();
+    const tab = tabs.find((t) => t.path === activePath);
+    if (!tab) {
+      pushToast("error", "No active file to run");
+      return;
+    }
+    await saveActiveFile();
+    const { buildRunCommand } = await import("../services/runners");
+    const hint = buildRunCommand({ path: tab.path, language: tab.language });
+    if (!hint) {
+      pushToast("error", `No runner for ${tab.language || "this file type"}`);
+      return;
+    }
+    get().beginDiagnosticsCapture();
+    appendOutput(`Run (${hint.label}): ${hint.command}`);
+    await writeToPty(`${hint.command}\r`);
+    pushToast("info", `Running with ${hint.label}…`);
+  },
+  runActiveFileInSandbox: async () => {
+    const {
+      workspacePath,
+      activePath,
+      settings,
+      pushToast,
+      appendOutput,
+      setBottomPanelOpen,
+      setBottomPanelTab,
+    } = get();
+    if (!workspacePath) {
+      pushToast("error", "Open a workspace first");
+      return;
+    }
+    if (!activePath || !/\.wasm$/i.test(activePath)) {
+      pushToast(
+        "error",
+        "Sandbox runs .wasm (WASI) files; use Ctrl+F5 for host Run.",
+      );
+      return;
+    }
+    const sandbox = await import("../services/sandbox");
+    setBottomPanelOpen(true);
+    setBottomPanelTab("output");
+    appendOutput(`Sandbox (wasm): ${activePath}`);
+    const unlisten = await sandbox.listenSandboxChunks((chunk) => {
+      appendOutput(chunk.data.replace(/\r?\n$/, ""));
+    });
+    try {
+      const result = await sandbox.sandboxRunWasm({
+        workspacePath,
+        wasmPath: activePath,
+        wallSeconds: settings.sandboxWallSeconds,
+        wasmMemoryMib: settings.sandboxWasmMemoryMib,
+      });
+      // Chunks already streamed to Output; note exit status only.
+      appendOutput(
+        `— sandbox exit ${result.code} (${result.reason}${result.timedOut ? ", timed out" : ""})`,
+      );
+      if (result.timedOut || (result.reason !== "ok" && result.reason !== "exit")) {
+        pushToast(
+          "error",
+          `Sandbox: ${result.reason}${result.code != null ? ` (code ${result.code})` : ""}`,
+        );
+      } else {
+        pushToast("info", `Sandbox finished (code ${result.code})`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushToast("error", msg);
+      appendOutput(msg);
+    } finally {
+      unlisten();
+    }
+  },
+  cancelSandbox: async () => {
+    const sandbox = await import("../services/sandbox");
+    try {
+      await sandbox.sandboxCancel();
+      get().pushToast("info", "Sandbox cancel requested");
+    } catch (err) {
+      get().pushToast("error", err instanceof Error ? err.message : String(err));
+    }
+  },
+  runLimitedCommand: async (opts) => {
+    const {
+      workspacePath,
+      settings,
+      pushToast,
+      appendOutput,
+      setBottomPanelOpen,
+      setBottomPanelTab,
+    } = get();
+    if (!workspacePath) {
+      pushToast("error", "Open a workspace first");
+      return;
+    }
+    const sandbox = await import("../services/sandbox");
+    setBottomPanelOpen(true);
+    setBottomPanelTab("output");
+    appendOutput(
+      `Sandbox (limited): ${opts.program} ${(opts.args ?? []).join(" ")}`.trim(),
+    );
+    const unlisten = await sandbox.listenSandboxChunks((chunk) => {
+      appendOutput(chunk.data.replace(/\r?\n$/, ""));
+    });
+    try {
+      const result = await sandbox.sandboxRunLimited({
+        workspacePath,
+        program: opts.program,
+        args: opts.args,
+        cwd: opts.cwd,
+        wallSeconds: settings.sandboxWallSeconds,
+        hostMemoryMib: settings.sandboxHostMemoryMib,
+      });
+      appendOutput(
+        `— limited exit ${result.code} (${result.reason}${result.timedOut ? ", timed out" : ""})`,
+      );
+      if (result.timedOut) {
+        pushToast("error", `Limited run timed out (${result.reason})`);
+      } else if (result.code !== 0) {
+        pushToast("error", `Limited run exited ${result.code}: ${result.reason}`);
+      } else {
+        pushToast("info", "Limited run finished");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushToast("error", msg);
+      appendOutput(msg);
+    } finally {
+      unlisten();
+    }
+  },
   setSelectedModel: (model) => {
     set({ selectedModel: model });
     const { settings } = get();
+    if (settings.inferenceBackend === "llamaCpp") return;
     const perf = resolvePerfConfig(settings.perfProfile, {
       keepAlive: settings.ollamaKeepAlive,
       numGpu: settings.ollamaNumGpu,
+      hyperSpeed: settings.hyperSpeed,
     });
     void warmModel(settings.ollamaBaseUrl, model, perf.keepAlive);
   },
@@ -228,6 +1079,7 @@ export const useIdeStore = create<IdeState>((set, get) => ({
     set({ chatStreaming: v });
     if (!v) get().persistChatSessions();
   },
+  setLastTokensPerSec: (v) => set({ lastTokensPerSec: v }),
   setMonacoEditor: (editor) => set({ monacoEditor: editor }),
   setStatusError: (msg) => set({ statusError: msg }),
   pushToast: (kind, message) => {
@@ -267,6 +1119,11 @@ export const useIdeStore = create<IdeState>((set, get) => ({
   setCreateFileDialog: (dialog) => set({ createFileDialog: dialog }),
   appendOutput: (line) =>
     set((s) => ({ outputLines: [...s.outputLines.slice(-500), line] })),
+  appendDebugConsole: (line) =>
+    set((s) => ({
+      debugConsoleLines: [...s.debugConsoleLines.slice(-500), line],
+    })),
+  clearDebugConsole: () => set({ debugConsoleLines: [] }),
   addProblem: (problem) =>
     set((s) => ({
       problems: [
@@ -441,9 +1298,12 @@ export const useIdeStore = create<IdeState>((set, get) => ({
   openWorkspace: async () => {
     try {
       if (get().anyDirty()) {
-        const ok = window.confirm(
-          "You have unsaved changes. Discard them and open another folder?",
-        );
+        const ok = await get().requestConfirm({
+          title: "Unsaved changes",
+          message: "You have unsaved changes. Discard them and open another folder?",
+          confirmLabel: "Discard & open",
+          danger: true,
+        });
         if (!ok) return;
       }
       const selected = await pickWorkspaceFolder();
@@ -461,6 +1321,18 @@ export const useIdeStore = create<IdeState>((set, get) => ({
         fileProposals: [],
       });
       get().loadChatSessionsForWorkspace(selected);
+      void get().refreshWorkspaceTasks();
+      try {
+        const { ensureDefaultLaunchJson } = await import("../services/launch");
+        const created = await ensureDefaultLaunchJson(selected);
+        if (created) {
+          get().pushToast("info", "Updated .vscode/launch.json (multi-language debug)");
+          await get().refreshTree();
+        }
+      } catch {
+        /* non-fatal */
+      }
+      void get().refreshWorkspaceLaunchConfigs();
       get().pushToast("success", "Workspace opened");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -491,6 +1363,24 @@ export const useIdeStore = create<IdeState>((set, get) => ({
     const { workspacePath } = get();
     if (!workspacePath) return;
     try {
+      // Binary WASM: track path for sandbox without loading bytes into the editor.
+      if (/\.wasm$/i.test(path)) {
+        const placeholder =
+          "; binary WASM module — use Command Palette: Sandbox: Run Current Wasm\n";
+        const tab: OpenTab = {
+          path,
+          content: placeholder,
+          originalContent: placeholder,
+          language: "plaintext",
+          dirty: false,
+        };
+        set((s) => ({
+          tabs: upsertTab(s.tabs, tab),
+          activePath: path,
+          statusError: "",
+        }));
+        return;
+      }
       const content = await readFile(workspacePath, path);
       const tab: OpenTab = {
         path,
@@ -513,12 +1403,17 @@ export const useIdeStore = create<IdeState>((set, get) => ({
 
   setActiveTab: (path) => set({ activePath: path }),
 
-  closeTab: (path, opts) => {
+  closeTab: async (path, opts) => {
     const { tabs, activePath } = get();
     const tab = tabs.find((t) => t.path === path);
     if (!tab) return true;
     if (tab.dirty && !opts?.force) {
-      const ok = window.confirm(`"${fileName(path)}" has unsaved changes. Close anyway?`);
+      const ok = await get().requestConfirm({
+        title: "Unsaved changes",
+        message: `"${fileName(path)}" has unsaved changes. Close anyway?`,
+        confirmLabel: "Close",
+        danger: true,
+      });
       if (!ok) return false;
     }
     const idx = tabs.findIndex((t) => t.path === path);
@@ -532,14 +1427,17 @@ export const useIdeStore = create<IdeState>((set, get) => ({
     return true;
   },
 
-  closeOtherTabs: (path) => {
+  closeOtherTabs: async (path) => {
     const { tabs } = get();
-    for (const t of tabs) {
-      if (t.path !== path && t.dirty) {
-        const ok = window.confirm("Close other tabs and discard unsaved changes?");
-        if (!ok) return;
-        break;
-      }
+    const dirtyOthers = tabs.some((t) => t.path !== path && t.dirty);
+    if (dirtyOthers) {
+      const ok = await get().requestConfirm({
+        title: "Close other tabs",
+        message: "Close other tabs and discard unsaved changes?",
+        confirmLabel: "Close others",
+        danger: true,
+      });
+      if (!ok) return;
     }
     set({
       tabs: get().tabs.filter((t) => t.path === path),
@@ -547,9 +1445,14 @@ export const useIdeStore = create<IdeState>((set, get) => ({
     });
   },
 
-  closeAllTabs: () => {
+  closeAllTabs: async () => {
     if (get().anyDirty()) {
-      const ok = window.confirm("Close all tabs and discard unsaved changes?");
+      const ok = await get().requestConfirm({
+        title: "Close all tabs",
+        message: "Close all tabs and discard unsaved changes?",
+        confirmLabel: "Close all",
+        danger: true,
+      });
       if (!ok) return;
     }
     set({ tabs: [], activePath: "" });
@@ -577,6 +1480,10 @@ export const useIdeStore = create<IdeState>((set, get) => ({
     const { workspacePath, tabs } = get();
     const tab = tabs.find((t) => t.path === path);
     if (!tab || !workspacePath) return;
+    if (/\.wasm$/i.test(path)) {
+      get().pushToast("info", "Binary .wasm is not saved from the editor");
+      return;
+    }
     try {
       await writeFile(workspacePath, tab.path, tab.content);
       set({
@@ -818,14 +1725,23 @@ export const useIdeStore = create<IdeState>((set, get) => ({
   },
 
   refreshOllama: async () => {
-    const baseUrl = get().settings.ollamaBaseUrl;
-    const online = await checkOllamaOnline(baseUrl);
+    const { settings } = get();
+    const backend = settings.inferenceBackend ?? "ollama";
+    const online = await checkInferenceOnline(
+      backend,
+      settings.ollamaBaseUrl,
+      settings.llamaCppBaseUrl,
+    );
     if (!online) {
       set({ ollamaOnline: false, models: [] });
       return;
     }
     try {
-      const models = await fetchModels(baseUrl);
+      const models = await fetchInferenceModels(
+        backend,
+        settings.ollamaBaseUrl,
+        settings.llamaCppBaseUrl,
+      );
       const selected = get().selectedModel;
       const nextSelected = models.includes(selected) ? selected : models[0] ?? "";
       set({
@@ -833,13 +1749,13 @@ export const useIdeStore = create<IdeState>((set, get) => ({
         models,
         selectedModel: nextSelected,
       });
-      if (nextSelected) {
-        const { settings } = get();
+      if (nextSelected && backend === "ollama") {
         const perf = resolvePerfConfig(settings.perfProfile, {
           keepAlive: settings.ollamaKeepAlive,
           numGpu: settings.ollamaNumGpu,
+          hyperSpeed: settings.hyperSpeed,
         });
-        void warmModel(baseUrl, nextSelected, perf.keepAlive);
+        void warmModel(settings.ollamaBaseUrl, nextSelected, perf.keepAlive);
       }
     } catch (err) {
       set({
@@ -909,7 +1825,12 @@ export const useIdeStore = create<IdeState>((set, get) => ({
   deleteEntry: async (path) => {
     const { workspacePath, tabs } = get();
     if (!workspacePath) return;
-    const ok = window.confirm(`Delete "${fileName(path)}"? This cannot be undone.`);
+    const ok = await get().requestConfirm({
+      title: "Delete",
+      message: `Delete "${fileName(path)}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
     if (!ok) return;
     try {
       await deletePath(workspacePath, path);
@@ -935,7 +1856,12 @@ export const useIdeStore = create<IdeState>((set, get) => ({
     if (!activePath) return;
     const tab = tabs.find((t) => t.path === activePath);
     if (tab?.dirty) {
-      const ok = window.confirm("Reload and discard unsaved changes?");
+      const ok = await get().requestConfirm({
+        title: "Reload from disk",
+        message: "Reload and discard unsaved changes?",
+        confirmLabel: "Reload",
+        danger: true,
+      });
       if (!ok) return;
     }
     await get().openFile(activePath, { forceReload: true });

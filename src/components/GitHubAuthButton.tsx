@@ -69,7 +69,8 @@ export default function GitHubAuthButton({ compact, onSessionChange }: Props) {
       setDeviceCode(start.userCode);
       setVerifyUri(start.verificationUri);
       try {
-        await navigator.clipboard.writeText(start.userCode);
+        const { clipboardWrite } = await import("../services/clipboard");
+        await clipboardWrite(start.userCode);
         pushToast("info", `Code ${start.userCode} copied — paste on GitHub`);
       } catch {
         pushToast("info", `Enter code ${start.userCode} on GitHub`);

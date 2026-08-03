@@ -63,6 +63,24 @@ export const PERF_PROFILES: Record<PerfProfile, PerfProfileConfig> = {
   },
 };
 
+/** Hyper-Speed overrides aimed at Iris Xe / 16GB (1.5B path toward 40–70 tok/s). */
+export const HYPER_SPEED_OVERRIDES: Pick<
+  PerfProfileConfig,
+  "maxHistoryMessages" | "maxAttachChars" | "keepAlive" | "options"
+> = {
+  keepAlive: "45m",
+  maxHistoryMessages: 6,
+  maxAttachChars: 4000,
+  options: {
+    num_ctx: 2048,
+    num_predict: 768,
+    temperature: 0.4,
+    top_p: 0.9,
+    num_batch: 1024,
+    num_gpu: 99,
+  },
+};
+
 export function resolvePerfConfig(
   profile: PerfProfile,
   overrides?: {
@@ -70,24 +88,39 @@ export function resolvePerfConfig(
     maxAttachChars?: number;
     keepAlive?: string;
     numGpu?: number | null;
+    hyperSpeed?: boolean;
   },
 ): PerfProfileConfig {
   const base = PERF_PROFILES[profile] ?? PERF_PROFILES.balanced;
-  const options: OllamaRuntimeOptions = { ...base.options };
+  let options: OllamaRuntimeOptions = { ...base.options };
+  let maxHistoryMessages = base.maxHistoryMessages;
+  let maxAttachChars = base.maxAttachChars;
+  let keepAlive = base.keepAlive;
+
+  if (overrides?.hyperSpeed) {
+    options = { ...HYPER_SPEED_OVERRIDES.options };
+    maxHistoryMessages = HYPER_SPEED_OVERRIDES.maxHistoryMessages;
+    maxAttachChars = HYPER_SPEED_OVERRIDES.maxAttachChars;
+    keepAlive = HYPER_SPEED_OVERRIDES.keepAlive;
+  }
+
   if (overrides?.numGpu != null && overrides.numGpu >= 0) {
     options.num_gpu = overrides.numGpu;
+  } else if (overrides?.hyperSpeed && options.num_gpu == null) {
+    options.num_gpu = 99;
   }
+
   return {
     ...base,
-    keepAlive: overrides?.keepAlive?.trim() || base.keepAlive,
+    keepAlive: overrides?.keepAlive?.trim() || keepAlive,
     maxHistoryMessages:
       overrides?.maxHistoryMessages && overrides.maxHistoryMessages > 0
         ? overrides.maxHistoryMessages
-        : base.maxHistoryMessages,
+        : maxHistoryMessages,
     maxAttachChars:
       overrides?.maxAttachChars && overrides.maxAttachChars > 0
         ? overrides.maxAttachChars
-        : base.maxAttachChars,
+        : maxAttachChars,
     options,
   };
 }

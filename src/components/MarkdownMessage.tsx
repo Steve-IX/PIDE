@@ -70,8 +70,9 @@ export default function MarkdownMessage({ content }: { content: string }) {
                 type="button"
                 className="px-2 py-0.5 rounded bg-pide-list-hover hover:bg-pide-list-active text-pide-fg transition-colors duration-150"
                 onClick={() => {
-                  void navigator.clipboard.writeText(code);
-                  pushToast("info", "Copied");
+                  void import("../services/clipboard").then(({ clipboardWrite }) =>
+                    clipboardWrite(code).then(() => pushToast("info", "Copied")),
+                  );
                 }}
               >
                 Copy

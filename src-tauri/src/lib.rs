@@ -8,6 +8,10 @@ use thiserror::Error;
 use std::os::windows::process::CommandExt;
 
 mod github;
+mod llama_sidecar;
+mod pty_session;
+mod dap_session;
+mod sandbox;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -156,7 +160,7 @@ fn walk_search(dir: &Path, query: &str, out: &mut Vec<SearchMatch>, max: usize, 
     }
 }
 
-fn configure_no_window(cmd: &mut Command) {
+pub(crate) fn configure_no_window(cmd: &mut Command) {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -285,7 +289,7 @@ fn canonicalize_loose(path: &Path) -> Result<PathBuf, FsError> {
     }
 }
 
-fn ensure_inside_workspace(workspace: &str, target: &Path) -> Result<PathBuf, FsError> {
+pub(crate) fn ensure_inside_workspace(workspace: &str, target: &Path) -> Result<PathBuf, FsError> {
     let root = PathBuf::from(workspace);
     if !root.is_dir() {
         return Err(FsError::Message(format!(
@@ -969,8 +973,15 @@ async fn github_get_user() -> Result<Option<github::GitHubUser>, github::GhError
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let pty_registry = std::sync::Arc::new(pty_session::PtyRegistry::default());
+    let dap_registry = std::sync::Arc::new(dap_session::DapRegistry::default());
+    let sandbox_registry = std::sync::Arc::new(sandbox::SandboxRegistry::default());
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(pty_registry)
+        .manage(dap_registry)
+        .manage(sandbox_registry)
         .invoke_handler(tauri::generate_handler![
             read_workspace_tree,
             read_file,
@@ -996,7 +1007,24 @@ pub fn run() {
             github_save_pat,
             github_load_session,
             github_clear_session,
-            github_get_user
+            github_get_user,
+            llama_sidecar::start_llama_sidecar,
+            llama_sidecar::stop_llama_sidecar,
+            llama_sidecar::llama_sidecar_status,
+            llama_sidecar::suspend_llama_sidecar,
+            llama_sidecar::resume_llama_sidecar,
+            pty_session::pty_create,
+            pty_session::pty_write,
+            pty_session::pty_resize,
+            pty_session::pty_kill,
+            dap_session::dap_start,
+            dap_session::dap_request,
+            dap_session::dap_stop,
+            dap_session::dap_is_active,
+            sandbox::sandbox_run_wasm,
+            sandbox::sandbox_run_limited,
+            sandbox::sandbox_cancel,
+            sandbox::sandbox_is_active
         ])
         .run(tauri::generate_context!())
         .expect("error while running PIDE");

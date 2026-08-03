@@ -12,9 +12,11 @@ import ToastHost from "./components/ToastHost";
 import CommandPalette from "./components/CommandPalette";
 import DiffApplyModal from "./components/DiffApplyModal";
 import CreateFileDialog from "./components/CreateFileDialog";
+import DialogHost from "./components/DialogHost";
 import BottomPanel from "./components/BottomPanel";
 import PaneResizer from "./components/PaneResizer";
 import { useIdeStore } from "./stores/ideStore";
+import { useLlamaSidecarWindowLifecycle } from "./hooks/useLlamaSidecarWindowLifecycle";
 
 function Sidebar() {
   const sidebarView = useIdeStore((s) => s.sidebarView);
@@ -32,11 +34,15 @@ export default function App() {
   const toggleSidebar = useIdeStore((s) => s.toggleSidebar);
   const toggleBottomPanel = useIdeStore((s) => s.toggleBottomPanel);
   const saveActiveFile = useIdeStore((s) => s.saveActiveFile);
+  const runActiveFile = useIdeStore((s) => s.runActiveFile);
+  const startDebugging = useIdeStore((s) => s.startDebugging);
   const refreshOllama = useIdeStore((s) => s.refreshOllama);
   const setPaletteMode = useIdeStore((s) => s.setPaletteMode);
   const focusSidebarView = useIdeStore((s) => s.focusSidebarView);
   const settings = useIdeStore((s) => s.settings);
   const updateSettings = useIdeStore((s) => s.updateSettings);
+
+  useLlamaSidecarWindowLifecycle();
 
   useEffect(() => {
     void refreshOllama();
@@ -59,9 +65,20 @@ export default function App() {
         setPaletteMode("command");
         return;
       }
+      if (mod && e.shiftKey && key === "b") {
+        e.preventDefault();
+        void useIdeStore.getState().runDefaultBuildTask();
+        return;
+      }
       if (mod && e.shiftKey && key === "f") {
         e.preventDefault();
         focusSidebarView("search");
+        return;
+      }
+      // Ctrl+F5 — Run Current File (no debugger)
+      if (mod && !e.shiftKey && e.key === "F5") {
+        e.preventDefault();
+        void runActiveFile();
         return;
       }
       if (mod && !e.shiftKey && key === "p") {
@@ -69,7 +86,15 @@ export default function App() {
         setPaletteMode("quickOpen");
         return;
       }
-      if (!mod) return;
+      if (!mod) {
+        if (e.key === "F5") {
+          e.preventDefault();
+          const st = useIdeStore.getState();
+          if (st.debugState === "stopped") void st.debugContinue();
+          else void startDebugging();
+        }
+        return;
+      }
 
       if (key === "s") {
         e.preventDefault();
@@ -89,6 +114,8 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [
     saveActiveFile,
+    runActiveFile,
+    startDebugging,
     setPaletteMode,
     focusSidebarView,
     toggleBottomPanel,
@@ -144,6 +171,7 @@ export default function App() {
       <CommandPalette />
       <DiffApplyModal />
       <CreateFileDialog />
+      <DialogHost />
     </div>
   );
 }

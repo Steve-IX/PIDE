@@ -1,10 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useIdeStore } from "../stores/ideStore";
-import {
-  chatStream,
-  SYSTEM_PROMPT,
-  warmModel,
-} from "../services/ollama";
+import { SYSTEM_PROMPT } from "../services/ollama";
+import { unifiedChatStream, warmInferenceModel } from "../services/llmChat";
 import {
   buildChatMessages,
   formatActiveFileContext,
@@ -23,6 +20,7 @@ import type { ChatMessage, ChatMode } from "../types";
 import MarkdownMessage from "./MarkdownMessage";
 import MultiApplyPanel from "./MultiApplyPanel";
 import ChatComposer from "./chat/ChatComposer";
+import TokSpeedPill from "./chat/TokSpeedPill";
 import { lastCodeBlock } from "../utils/extractCode";
 import { suggestFileName } from "../utils/extFromLang";
 import { flattenFiles, fuzzyScore } from "../utils/tree";
@@ -42,6 +40,7 @@ export default function ChatPane() {
   const setMessages = useIdeStore((s) => s.setMessages);
   const chatStreaming = useIdeStore((s) => s.chatStreaming);
   const setChatStreaming = useIdeStore((s) => s.setChatStreaming);
+  const setLastTokensPerSec = useIdeStore((s) => s.setLastTokensPerSec);
   const refreshOllama = useIdeStore((s) => s.refreshOllama);
   const activePath = useIdeStore((s) => s.activePath);
   const tabs = useIdeStore((s) => s.tabs);
@@ -211,7 +210,15 @@ export default function ChatPane() {
       maxAttachChars: settings.maxAttachChars,
       keepAlive: settings.ollamaKeepAlive,
       numGpu: settings.ollamaNumGpu,
+      hyperSpeed: settings.hyperSpeed,
     });
+
+    const backend = settings.inferenceBackend ?? "ollama";
+    const streamBase = {
+      backend,
+      ollamaBaseUrl: settings.ollamaBaseUrl,
+      llamaCppBaseUrl: settings.llamaCppBaseUrl,
+    };
 
     const mentionCtx = await collectMentionContexts(text, perf.maxAttachChars);
     let contextPrefix = "";
@@ -267,6 +274,7 @@ export default function ChatPane() {
         agentModels: settings.agentModels,
         keepAlive: perf.keepAlive,
         signal: controller.signal,
+        hyperSpeed: settings.hyperSpeed,
       });
       setRouteLabel(routed.label);
       setActiveReplyModel(routed.model);
@@ -298,11 +306,17 @@ export default function ChatPane() {
           ),
         );
 
+        let lastMetrics: ChatMessage["metrics"] | undefined;
         for (let i = 0; i < tasks.length; i++) {
           const task = tasks[i];
           setAgentProgress(`Worker ${i + 1}/${tasks.length}: ${task.title}`);
           setActiveReplyModel(worker);
-          await warmModel(settings.ollamaBaseUrl, worker, perf.keepAlive);
+          await warmInferenceModel({
+            backend,
+            ollamaBaseUrl: settings.ollamaBaseUrl,
+            model: worker,
+            keepAlive: perf.keepAlive,
+          });
           streamBufRef.current = "";
           const header = `\n\n### ${i + 1}. ${task.title}\n\n`;
           setMessages((prev) =>
@@ -322,8 +336,8 @@ export default function ChatPane() {
             systemPromptForMode(SYSTEM_PROMPT, "agent", "code"),
           );
 
-          const part = await chatStream({
-            baseUrl: settings.ollamaBaseUrl,
+          const part = await unifiedChatStream({
+            ...streamBase,
             model: worker,
             messages: taskMessages,
             signal: controller.signal,
@@ -332,7 +346,17 @@ export default function ChatPane() {
             onToken: (token) => queueStreamToken(assistantId, token),
           });
           flushStreamBuffer(assistantId);
-          combined += header + part;
+          combined += header + part.text;
+          if (part.metrics) lastMetrics = part.metrics;
+        }
+
+        if (lastMetrics) {
+          setLastTokensPerSec(lastMetrics.tokensPerSec);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, metrics: lastMetrics } : m,
+            ),
+          );
         }
 
         setAgentProgress(null);
@@ -341,7 +365,12 @@ export default function ChatPane() {
         return;
       }
 
-      await warmModel(settings.ollamaBaseUrl, routed.model, perf.keepAlive);
+      await warmInferenceModel({
+        backend,
+        ollamaBaseUrl: settings.ollamaBaseUrl,
+        model: routed.model,
+        keepAlive: perf.keepAlive,
+      });
       const history = withSystem(
         buildChatMessages({
           priorMessages,
@@ -351,8 +380,8 @@ export default function ChatPane() {
         systemPromptForMode(SYSTEM_PROMPT, settings.chatMode, routed.intent),
       );
 
-      const full = await chatStream({
-        baseUrl: settings.ollamaBaseUrl,
+      const result = await unifiedChatStream({
+        ...streamBase,
         model: routed.model,
         messages: history,
         signal: controller.signal,
@@ -363,12 +392,18 @@ export default function ChatPane() {
       flushStreamBuffer(assistantId);
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === assistantId && m.content.length < full.length
-            ? { ...m, content: full }
+          m.id === assistantId
+            ? {
+                ...m,
+                content:
+                  m.content.length < result.text.length ? result.text : m.content,
+                metrics: result.metrics,
+              }
             : m,
         ),
       );
-      const proposals = parseFileProposals(full);
+      if (result.metrics) setLastTokensPerSec(result.metrics.tokensPerSec);
+      const proposals = parseFileProposals(result.text);
       if (proposals.length) setFileProposals(proposals);
     } catch (err) {
       flushStreamBuffer(assistantId);
@@ -500,7 +535,9 @@ export default function ChatPane() {
       <div className="flex-1 overflow-auto px-3 py-3 space-y-3">
         {!ollamaOnline && (
           <div className="rounded-md border border-pide-git-mod/40 bg-pide-git-mod/10 p-3 text-xs text-pide-git-mod leading-relaxed">
-            Ollama is offline. Start Ollama on this machine, then refresh.
+            {settings.inferenceBackend === "llamaCpp"
+              ? "llama-server is offline. Start it from Models (or your terminal), then refresh."
+              : "Ollama is offline. Start Ollama on this machine, then refresh."}
             <button
               type="button"
               onClick={() => void refreshOllama()}
@@ -532,7 +569,15 @@ export default function ChatPane() {
             </div>
             {m.role === "assistant" ? (
               m.content ? (
-                <MarkdownMessage content={m.content} />
+                <>
+                  <MarkdownMessage content={m.content} />
+                  {!chatStreaming && m.metrics ? (
+                    <TokSpeedPill
+                      tokensPerSec={m.metrics.tokensPerSec}
+                      ttftMs={m.metrics.ttftMs}
+                    />
+                  ) : null}
+                </>
               ) : (
                 <span className="text-pide-muted text-sm animate-pulse">Thinking…</span>
               )
